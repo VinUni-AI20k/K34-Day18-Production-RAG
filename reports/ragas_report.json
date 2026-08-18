@@ -1,0 +1,18 @@
+{
+  "aggregate": {
+    "faithfulness": 1.0,
+    "answer_relevancy": 0.3352,
+    "context_precision": 0.1938,
+    "context_recall": 0.7218,
+    "evaluation_mode": "lexical_fallback"
+  },
+  "num_questions": 20,
+  "failures": [],
+  "latency_breakdown_ms": {
+    "chunking": 50.41,
+    "enrichment": 1.0,
+    "indexing": 38.32,
+    "reranker_load": 0.04,
+    "evaluation": 2.77
+  }
+}
