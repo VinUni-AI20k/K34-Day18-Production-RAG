@@ -10,6 +10,13 @@ import os
 import sys
 import subprocess
 
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
 
 def check_file(path: str, required: bool = True) -> bool:
     if os.path.exists(path):

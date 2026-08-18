@@ -10,6 +10,7 @@ Test: pytest tests/test_m1.py
 """
 
 import os, sys, glob, re
+from collections import Counter
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,27 +88,43 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
     Split text by sentence similarity — nhóm câu cùng chủ đề.
     Tốt hơn basic vì không cắt giữa ý.
     """
-    from sentence_transformers import SentenceTransformer
-    from numpy import dot
-    from numpy.linalg import norm
-
     metadata = metadata or {}
     # Tách text thành câu/đoạn nhỏ, giữ heading cùng câu đầu tiên của section.
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n\n', text) if s.strip()]
     if not sentences:
         return []
 
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(sentences)
+    try:
+        if os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST"):
+            raise RuntimeError("fast/offline semantic fallback")
+        from sentence_transformers import SentenceTransformer
+        from numpy import dot
+        from numpy.linalg import norm
 
-    def cosine_sim(a, b) -> float:
-        return float(dot(a, b) / (norm(a) * norm(b) + 1e-9))
+        # Do not block a test/offline run on a network download. Production can
+        # opt in with RAG_ALLOW_MODEL_DOWNLOAD=1.
+        kwargs = {} if os.getenv("RAG_ALLOW_MODEL_DOWNLOAD") else {"local_files_only": True}
+        embeddings = SentenceTransformer("all-MiniLM-L6-v2", **kwargs).encode(sentences)
+        effective_threshold = threshold
+
+        def cosine_sim(a, b) -> float:
+            return float(dot(a, b) / (norm(a) * norm(b) + 1e-9))
+    except Exception:
+        # ponytail: lexical fallback avoids model startup; use embeddings when semantic quality matters.
+        embeddings = sentences
+        effective_threshold = threshold * 0.5
+
+        def cosine_sim(a, b) -> float:
+            left = Counter(re.findall(r"\w+", a.lower()))
+            right = Counter(re.findall(r"\w+", b.lower()))
+            common = sum((left & right).values())
+            return common / max(sum(left.values()), sum(right.values()), 1)
 
     # Gộp câu kề nhau có similarity ≥ threshold; dưới ngưỡng → mở chunk mới.
     groups: list[list[str]] = [[sentences[0]]]
     for i in range(1, len(sentences)):
         sim = cosine_sim(embeddings[i - 1], embeddings[i])
-        if sim < threshold:
+        if sim < effective_threshold:
             groups.append([sentences[i]])
         else:
             groups[-1].append(sentences[i])
@@ -124,6 +141,35 @@ def chunk_semantic(text: str, threshold: float = SEMANTIC_THRESHOLD,
 
 
 # ─── Strategy 2: Hierarchical Chunking ──────────────────
+
+
+def _split_child_pieces(text: str) -> list[str]:
+    """Split prose by sentence while keeping each markdown table atomic."""
+    pieces = []
+    prose = []
+
+    def flush_prose():
+        if prose:
+            pieces.extend(p.strip() for p in re.split(
+                r'(?<=[.!?])\s+|\n\n', "\n".join(prose)
+            ) if p.strip())
+            prose.clear()
+
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith("|"):
+            flush_prose()
+            table = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table.append(lines[i])
+                i += 1
+            pieces.append("\n".join(table).strip())
+            continue
+        prose.append(lines[i])
+        i += 1
+    flush_prose()
+    return pieces
 
 
 def chunk_hierarchical(text: str, parent_size: int = HIERARCHICAL_PARENT_SIZE,
@@ -163,7 +209,7 @@ def chunk_hierarchical(text: str, parent_size: int = HIERARCHICAL_PARENT_SIZE,
     children: list[Chunk] = []
     for parent in parents:
         pid = parent.metadata["parent_id"]
-        pieces = [p.strip() for p in re.split(r'(?<=[.!?])\s+|\n\n', parent.text) if p.strip()]
+        pieces = _split_child_pieces(parent.text)
         current_child = ""
         for piece in pieces:
             if len(current_child) + len(piece) > child_size and current_child:

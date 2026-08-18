@@ -9,7 +9,15 @@ Usage:
 
 import json
 import os
+import sys
 import time
+
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
 def main():
@@ -36,7 +44,7 @@ def main():
     # Move reports to reports/
     for f in ["ragas_report.json", "naive_baseline_report.json"]:
         if os.path.exists(f):
-            os.rename(f, f"reports/{f}")
+            os.replace(f, f"reports/{f}")
 
     # Step 3: Comparison
     print("\n📌 STEP 3: Comparison")

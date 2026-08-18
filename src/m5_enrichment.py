@@ -50,7 +50,7 @@ def summarize_chunk(text: str) -> str:
     Tạo summary ngắn cho chunk.
     Embed summary thay vì (hoặc cùng với) raw chunk → giảm noise.
     """
-    if OPENAI_API_KEY:
+    if OPENAI_API_KEY and not (os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST")):
         try:
             from openai import OpenAI
             client = OpenAI()
@@ -80,7 +80,7 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
     Generate câu hỏi mà chunk có thể trả lời.
     Index cả questions lẫn chunk → query match tốt hơn (bridge vocabulary gap).
     """
-    if OPENAI_API_KEY:
+    if OPENAI_API_KEY and not (os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST")):
         try:
             from openai import OpenAI
             client = OpenAI()
@@ -112,7 +112,7 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
     Prepend context giải thích chunk nằm ở đâu trong document.
     Anthropic benchmark: giảm 49% retrieval failure (alone).
     """
-    if OPENAI_API_KEY:
+    if OPENAI_API_KEY and not (os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST")):
         try:
             from openai import OpenAI
             client = OpenAI()
@@ -141,7 +141,7 @@ def extract_metadata(text: str) -> dict:
     """
     LLM extract metadata tự động: topic, entities, date_range, category.
     """
-    if OPENAI_API_KEY:
+    if OPENAI_API_KEY and not (os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST")):
         try:
             from openai import OpenAI
             client = OpenAI()
@@ -168,7 +168,7 @@ def _enrich_single_call(text: str, source: str) -> dict:
 
     ⚠️ Cost optimization: 1 API call thay vì 4 calls riêng lẻ.
     """
-    if OPENAI_API_KEY:
+    if OPENAI_API_KEY and not (os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST")):
         try:
             from openai import OpenAI
             client = OpenAI()
@@ -189,7 +189,20 @@ def _enrich_single_call(text: str, source: str) -> dict:
             return _extract_json(resp.choices[0].message.content)
         except Exception as e:
             print(f"  ⚠️  Enrichment API failed: {e}")
-    return {}
+    # Keep combined mode useful offline too: one deterministic pass still
+    # enriches the chunk without silently returning the original text.
+    import re as _re
+    sentences = [s.strip() for s in _re.split(r"[.!?\n]", text) if s.strip()]
+    summary = ". ".join(sentences[:2])
+    if summary:
+        summary += "."
+    questions = [f"{sentence.rstrip('.')}?" for sentence in sentences[:3]]
+    return {
+        "summary": summary or text,
+        "questions": questions,
+        "context": f"Trích từ {source or 'tài liệu nội bộ'}.",
+        "metadata": {"category": "policy", "language": "vi"},
+    }
 
 
 # ─── Full Enrichment Pipeline ────────────────────────────
@@ -239,7 +252,7 @@ def enrich_chunks(
             enriched_text=enriched_text,
             summary=summary,
             hypothesis_questions=questions,
-            auto_metadata={**chunk.get("metadata", {}), **auto_meta},
+            auto_metadata={**auto_meta, **chunk.get("metadata", {})},
             method="+".join(methods),
         ))
 

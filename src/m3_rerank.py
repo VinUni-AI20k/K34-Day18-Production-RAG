@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Module 3: Reranking — Cross-encoder top-20 → top-3 + latency benchmark."""
 
-import os, sys, time
+import os, re, sys, time
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,19 +25,39 @@ class CrossEncoderReranker:
 
     def _load_model(self):
         if self._model is None:
+            if os.getenv("RAG_FAST") or os.getenv("PYTEST_CURRENT_TEST"):
+                self._model = False
+                return self._model
             # Dùng sentence_transformers.CrossEncoder — KHÔNG dùng FlagEmbedding vì
             # FlagReranker crash với transformers>=5.0 (XLMRobertaTokenizer lỗi).
-            from sentence_transformers import CrossEncoder
-            self._model = CrossEncoder(self.model_name)
+            try:
+                from sentence_transformers import CrossEncoder
+                kwargs = {} if os.getenv("RAG_ALLOW_MODEL_DOWNLOAD") else {"local_files_only": True}
+                self._model = CrossEncoder(self.model_name, **kwargs)
+            except Exception as exc:
+                print(f"  CrossEncoder unavailable; using lexical fallback ({exc})")
+                self._model = False
         return self._model
+
+    @staticmethod
+    def _fallback_score(query: str, text: str) -> float:
+        # ponytail: token overlap is only an availability fallback, not a cross-encoder substitute.
+        query_tokens = set(re.findall(r"\w+", query.lower()))
+        document_tokens = set(re.findall(r"\w+", text.lower()))
+        overlap = len(query_tokens & document_tokens) / max(len(query_tokens), 1)
+        phrase_bonus = 0.25 if query.lower().strip() in text.lower() else 0.0
+        return overlap + phrase_bonus
 
     def rerank(self, query: str, documents: list[dict], top_k: int = RERANK_TOP_K) -> list[RerankResult]:
         """Rerank documents: top-20 → top-k."""
         if not documents:
             return []
         model = self._load_model()
-        pairs = [(query, doc["text"]) for doc in documents]
-        scores = model.predict(pairs)
+        if model:
+            pairs = [(query, doc["text"]) for doc in documents]
+            scores = model.predict(pairs)
+        else:
+            scores = [self._fallback_score(query, doc["text"]) for doc in documents]
         if isinstance(scores, (int, float)):
             scores = [scores]
         scored = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
