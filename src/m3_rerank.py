@@ -18,35 +18,71 @@ class RerankResult:
     rank: int
 
 
-class CrossEncoderReranker:
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
-        self.model_name = model_name
-        self._model = None
+import os
+from pinecone import Pinecone, PineconeException
 
-    def _load_model(self):
-        if self._model is None:
-            # TODO: Load cross-encoder model
-            # from sentence_transformers import CrossEncoder
-            # self._model = CrossEncoder(self.model_name)
-            #
-            # ⚠️ LƯU Ý: Dùng sentence_transformers.CrossEncoder, KHÔNG dùng FlagEmbedding.
-            # FlagReranker crash với transformers>=5.0 (XLMRobertaTokenizer lỗi).
-            pass
-        return self._model
+class CrossEncoderReranker:
+    def __init__(self, model_name: str = "bge-reranker-v2-m3"):
+        self.model_name = model_name
+        self._pc = None
+
+    def _get_client(self):
+        if self._pc is None:
+            api_key = os.environ.get("PINECONE_API_KEY")
+            if not api_key:
+                raise ValueError("PINECONE_API_KEY environment variable is missing")
+            self._pc = Pinecone(api_key=api_key)
+        return self._pc
 
     def rerank(self, query: str, documents: list[dict], top_k: int = RERANK_TOP_K) -> list[RerankResult]:
-        """Rerank documents: top-20 → top-k."""
-        # TODO: Implement reranking
-        # 1. if not documents: return []
-        # 2. model = self._load_model()
-        # 3. pairs = [(query, doc["text"]) for doc in documents]
-        # 4. scores = model.predict(pairs)
-        # 5. if isinstance(scores, (int, float)): scores = [scores]
-        # 6. scored = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
-        # 7. Return [RerankResult(text=..., original_score=doc.get("score", 0.0),
-        #            rerank_score=float(score), metadata=..., rank=i)
-        #            for i, (score, doc) in enumerate(scored[:top_k])]
-        return []
+        """Rerank documents: top-20 -> top-k."""
+        if not documents:
+            return []
+            
+        pc = self._get_client()
+        docs_texts = [doc["text"] for doc in documents]
+        
+        try:
+            res = pc.inference.rerank(
+                model=self.model_name,
+                query=query,
+                documents=docs_texts,
+                top_n=len(documents), # Get all, we will truncate to top_k later to be safe, or we can just pass top_k
+                return_documents=True
+            )
+        except PineconeException as e:
+            err_msg = str(e).replace(os.environ.get("PINECONE_API_KEY", "NOT_SET"), "****")
+            raise RuntimeError(f"Pinecone API failed: {type(e).__name__} - {err_msg}")
+        except Exception as e:
+            err_msg = str(e).replace(os.environ.get("PINECONE_API_KEY", "NOT_SET"), "****")
+            raise RuntimeError(f"Pinecone inference error: {type(e).__name__} - {err_msg}")
+            
+        items = res.data
+        # Ensure it's sorted by score descending
+        try:
+            items.sort(key=lambda x: x["score"], reverse=True)
+        except TypeError: # if object
+            items.sort(key=lambda x: x.score, reverse=True)
+        
+        results = []
+        for i, item in enumerate(items[:top_k]):
+            if isinstance(item, dict):
+                idx = item["index"]
+                score = float(item["score"])
+            else:
+                idx = item.index
+                score = float(item.score)
+                
+            original_doc = documents[idx]
+            results.append(RerankResult(
+                text=original_doc["text"],
+                original_score=original_doc.get("score", 0.0),
+                rerank_score=score,
+                metadata=original_doc.get("metadata", {}),
+                rank=i
+            ))
+            
+        return results
 
 
 class FlashrankReranker:
