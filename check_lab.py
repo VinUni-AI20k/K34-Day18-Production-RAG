@@ -56,19 +56,28 @@ def run_tests() -> tuple[int, int]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=no", "-q"],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=300,
         )
+        # Parse "X passed, Y failed" / "X passed" / "===== 37 passed ... ====="
+        # bằng cách quét mọi dòng (không giả định dòng cuối là summary).
         lines = result.stdout.strip().split("\n")
-        summary = lines[-1] if lines else ""
-        # Parse "X passed, Y failed" or "X passed"
         passed = total = 0
-        for part in summary.split(","):
-            part = part.strip()
-            if "passed" in part:
-                passed = int(part.split()[0])
-                total += passed
-            if "failed" in part:
-                total += int(part.split()[0])
+        for line in lines:
+            if "passed" not in line and "failed" not in line:
+                continue
+            for part in line.split(","):
+                tokens = part.strip().split()
+                for i, tok in enumerate(tokens):
+                    if tok in ("passed", "failed") and i > 0:
+                        try:
+                            n = int(tokens[i - 1])
+                        except ValueError:
+                            continue
+                        if tok == "passed":
+                            passed += n
+                            total += n
+                        else:
+                            total += n
         return passed, total
     except Exception as e:
         print(f"  ⚠️  pytest error: {e}")

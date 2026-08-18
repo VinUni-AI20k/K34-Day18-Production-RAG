@@ -1,9 +1,19 @@
 """Shared configuration for Lab 18."""
 
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Windows console mặc định dùng cp1252 → crash khi print tiếng Việt.
+# Force UTF-8 để main.py / pipeline.py chạy ổn định trên Windows.
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 # --- API Keys ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
